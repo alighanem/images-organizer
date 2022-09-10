@@ -57,7 +57,8 @@ func main() {
 
 		err = os.Rename(oldPath, newPath)
 		if err != nil {
-			log.Fatal("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath)
+			log.Println("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath)
+			continue
 		}
 	}
 
