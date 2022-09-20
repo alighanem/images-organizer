@@ -22,6 +22,11 @@ func main() {
 	var files []fs.FileInfo
 
 	err := filepath.WalkDir(ImagesFolderPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			log.Println("cannot read", "err", err)
+			return err
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -57,7 +62,7 @@ func main() {
 
 		err = os.Rename(oldPath, newPath)
 		if err != nil {
-			log.Println("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath)
+			log.Println("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath, "err", err)
 			continue
 		}
 	}
