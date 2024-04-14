@@ -11,7 +11,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {
-                "IMAGES_FOLDER": "D:\\Ali\\OneDrive\\Images\\Pellicule"
+                "PICTURES_FOLDER": "D:\\Ali\\OneDrive\\Images\\Pellicule"
             }
         }
     ]

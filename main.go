@@ -6,22 +6,25 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"time"
+	"strconv"
 )
 
-var ImagesFolderPath string = ""
-var layoutISO = "2006-01-02"
+var picturesFolderPath string = ""
+var rootImagesFolderPath string = ""
+var layoutISO = "2006-01"
 
 func main() {
 
-	ImagesFolderPath = os.Getenv("IMAGES_FOLDER")
-	if len(ImagesFolderPath) == 0 {
+	picturesFolderPath = os.Getenv("PICTURES_FOLDER")
+	if picturesFolderPath == "" {
 		log.Fatal("Images folder is empty")
 	}
 
+	rootImagesFolderPath = filepath.Dir(picturesFolderPath)
+
 	var files []fs.FileInfo
 
-	err := filepath.WalkDir(ImagesFolderPath, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(picturesFolderPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			log.Println("cannot read", "err", err)
 			return err
@@ -50,14 +53,27 @@ func main() {
 
 	for _, file := range files {
 		modifiedDate := file.ModTime().UTC()
-		firstDay := time.Date(modifiedDate.Year(), modifiedDate.Month(), 1, 0, 0, 0, 0, time.UTC)
-		folderName := firstDay.UTC().Format(layoutISO)
-		folderPath := path.Join(ImagesFolderPath, folderName)
-		_, err := os.Stat(folderPath)
+
+		yearFolder := path.Join(rootImagesFolderPath, strconv.Itoa(modifiedDate.Year()))
+		_, err := os.Stat(yearFolder)
 		if os.IsNotExist(err) {
-			_ = os.Mkdir(folderPath, 0755)
+			err = os.Mkdir(yearFolder, 0755)
+			if err != nil {
+				log.Fatalln("creating year folder", "folder_path", yearFolder)
+			}
 		}
-		oldPath := path.Join(ImagesFolderPath, file.Name())
+
+		folderName := modifiedDate.Format(layoutISO)
+		folderPath := path.Join(yearFolder, folderName)
+		_, err = os.Stat(folderPath)
+		if os.IsNotExist(err) {
+			err = os.Mkdir(folderPath, 0755)
+			if err != nil {
+				log.Fatalln("creating image folder", "folder_path", yearFolder)
+			}
+		}
+
+		oldPath := path.Join(picturesFolderPath, file.Name())
 		newPath := path.Join(folderPath, file.Name())
 
 		err = os.Rename(oldPath, newPath)
