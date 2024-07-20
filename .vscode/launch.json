@@ -11,7 +11,8 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {
-                "PICTURES_FOLDER": "D://Ali//OneDrive//Images//Pellicule"
+                "PICTURES_FOLDER": "D://Ali//OneDrive//Images//Pellicule",
+                "DRY_RUN": "false"
             }
         }
     ]
