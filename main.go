@@ -1,32 +1,46 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/h2non/filetype"
-	"github.com/rwcarlsen/goexif/exif"
-	"github.com/rwcarlsen/goexif/mknote"
+	"github.com/dsoprea/go-exif/v3"
+	exifcommon "github.com/dsoprea/go-exif/v3/common"
 )
 
-func init() {
-	// Optionally register camera makenote data parsing - currently Nikon and
-	// Canon are supported.
-	exif.RegisterParsers(mknote.All...)
+type CLI struct {
+	Logger                *slog.Logger
+	SourceFolderPath      string
+	DestinationFolderPath string
+	DryRun                bool
+
+	ifdMapping *exifcommon.IfdMapping
 }
 
-func main() {
+var allowedExtensions = map[string]struct{}{
+	".jpg": {},
+	".png": {},
+	".mp4": {},
+	".avi": {},
+}
+
+func configure() *CLI {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	dryRunValue := os.Getenv(("DRY_RUN"))
 	dryRun := true
 	if dryRunValue != "" {
 		v, err := strconv.ParseBool(dryRunValue)
 		if err != nil {
-			log.Fatal("dry run value invalid", "dry_run", dryRunValue)
+			logger.Error("dry run value invalid", "dry_run", dryRunValue)
+			return nil
 		}
 		dryRun = v
 	}
@@ -34,82 +48,129 @@ func main() {
 	// This folder is the folder where are located the images we want to move
 	sourceFolderPath := os.Getenv("PICTURES_FOLDER")
 	if sourceFolderPath == "" {
-		log.Fatal("Source Images folder is not defrined")
+		logger.Error("Source Images folder is not defined")
+		return nil
+	}
+
+	destinationFolderPath := os.Getenv("DESTINATION_FOLDER")
+	if sourceFolderPath == "" {
+		logger.Error("Destination folder is not defined")
+		return nil
 	}
 
 	// use path join to format correctly the source folder path
 	sourceFolderPath = filepath.Join(sourceFolderPath)
 
-	// Read the folder to get all files in this folder
-	entries, err := os.ReadDir(sourceFolderPath)
+	im, err := exifcommon.NewIfdMappingWithStandard()
 	if err != nil {
-		log.Fatalln("failed reading folder", "folder_path", sourceFolderPath, "err", err)
+		logger.Error("init ifd mapping", "err", err)
+		return nil
+	}
+
+	return &CLI{
+		Logger:                logger,
+		DryRun:                dryRun,
+		SourceFolderPath:      sourceFolderPath,
+		DestinationFolderPath: destinationFolderPath,
+		ifdMapping:            im,
+	}
+}
+
+func main() {
+	c := configure()
+	if c == nil {
+		slog.Error("failed to configure cli")
 		return
 	}
 
-	var files []fs.FileInfo
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
+	log := c.Logger
 
-		info, err := entry.Info()
+	files := make(map[string]fs.FileInfo)
+	// Read the folder and subfolders to get all files
+	err := filepath.WalkDir(c.SourceFolderPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			log.Fatalln("failed reading file", "err", err, "entry", entry.Name())
+			return err
 		}
 
-		files = append(files, info)
+		if d.IsDir() {
+			return nil
+		}
+
+		extension := strings.ToLower(filepath.Ext(path))
+		if _, allowed := allowedExtensions[extension]; !allowed {
+			return nil
+		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+
+		files[path] = info
+
+		return nil
+	})
+
+	if err != nil {
+		log.Error("failed reading folder", "folder_path", c.SourceFolderPath, "err", err)
 	}
 
 	if len(files) == 0 {
-		log.Println("no files found in the folder")
+		log.Info("no files found in the folder")
 		return
 	}
 
-	// Get the parent folder of the folder source
-	// For example if the folder source is C:/images/pellicule
-	// the parent folder will be C:/images
-	rootPath := filepath.Dir(sourceFolderPath)
+	log.Info("path found", "count", len(files))
+
 	i := 0
 
-	for _, file := range files {
-		if file.Name() == "desktop.ini" {
-			// TODO improve it by allowing only certain file types
-			// ignore it
-			continue
-		}
-
-		oldPath := filepath.Join(sourceFolderPath, file.Name())
-
+	for oldPath, file := range files {
 		// Compute the destination folder of the image based on its modification date
 		// The destination folder will be like C:/images/2024/2024-06-15
-		takenTime, err := getTakenTime(oldPath, file)
+		takenTime, err := c.getTakenTime(oldPath, file)
 		if err != nil {
-			log.Println("failed to get taken time", "path", oldPath, "err", err)
+			log.Error("failed to get taken time", "path", oldPath, "err", err)
 			continue
 		}
 
 		// Compute destination folder and the complete new path of the file
-		destinationFolder := computeDestinationFolder(rootPath, takenTime)
+		destinationFolder := c.computeDestinationFolder(takenTime)
 		newPath := filepath.Join(destinationFolder, file.Name())
 
-		if dryRun {
-			log.Println("dry run", "old_path", oldPath, "new_path", newPath, "date", takenTime)
+		exist, err := pathExists(newPath)
+		if err != nil {
+			log.Error("checking file path", "err", err, "file_path", newPath)
+			return
+		}
+
+		if exist {
+			log.Error("cannot move file: already exists", "file_path", newPath)
+			return
+		}
+
+		if c.DryRun {
+			log.Warn("dry run", "old_path", oldPath, "new_path", newPath, "date", takenTime)
 			continue
 		}
 
-		_, err = os.Stat(destinationFolder)
-		if os.IsNotExist(err) {
+		exist, err = pathExists(destinationFolder)
+		if err != nil {
+			log.Error("checking destination folder", "err", err, "folder_path", destinationFolder)
+			return
+		}
+
+		if !exist {
 			// Create the destination folder if it does not existy
 			err = os.Mkdir(destinationFolder, 0755)
 			if err != nil {
-				log.Fatalln("creating image folder", "folder_path", destinationFolder)
+				log.Error("creating image folder", "folder_path", destinationFolder)
+				return
 			}
 		}
 
 		err = os.Rename(oldPath, newPath)
 		if err != nil {
-			log.Println("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath, "err", err)
+			log.Error("cannot move file", "name", file.Name(), "old path", oldPath, "new path", newPath, "err", err)
 			continue
 		}
 
@@ -121,25 +182,40 @@ func main() {
 		i++
 	}
 
-	log.Println("finished")
+	log.Info("finished")
 }
 
-func computeDestinationFolder(imagesFolderPath string, fileDate time.Time) string {
-	yearFolder := filepath.Join(imagesFolderPath, strconv.Itoa(fileDate.Year()))
+// pathExists returns whether the given file or directory exists
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, err
+}
+
+func (c *CLI) computeDestinationFolder(fileDate time.Time) string {
+	yearFolder := filepath.Join(c.DestinationFolderPath, strconv.Itoa(fileDate.Year()))
 	folderName := fileDate.Format("2006-01-02")
 	folderPath := filepath.Join(yearFolder, folderName)
 	return folderPath
 }
 
-func getTakenTime(filePath string, fileInfo fs.FileInfo) (time.Time, error) {
+func (c *CLI) getTakenTime(filePath string, fileInfo fs.FileInfo) (time.Time, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return time.Time{}, err
 	}
 	defer f.Close()
 
+	// TODO keep this code for now
 	// We only have to pass the file header = first 261 bytes
-	head := make([]byte, 261)
+	/*head := make([]byte, 261)
 	f.Read(head)
 
 	if !filetype.IsImage(head) {
@@ -147,27 +223,54 @@ func getTakenTime(filePath string, fileInfo fs.FileInfo) (time.Time, error) {
 	}
 
 	// reset the reader to allow exif read the file
-	f.Seek(0, 0)
+	f.Seek(0, 0)*/
 
-	x, err := exif.Decode(f)
+	exifDate, err := c.getExifDate(f)
 	if err != nil {
-		if err.Error() == "EOF" {
-			// Cannot decode exit maybe does not exist in the file
-			// Returns the mod type
-			return fileInfo.ModTime(), nil
-		}
+		c.Logger.Debug("exit date not found", "file", filePath, "err", err)
+		// return modification date if exif date not found
+		return fileInfo.ModTime(), nil
+	}
 
+	return exifDate, nil
+}
+
+func (c *CLI) getExifDate(r io.Reader) (time.Time, error) {
+	rawExif, err := exif.SearchAndExtractExifWithReader(r)
+	if err != nil {
 		return time.Time{}, err
 	}
 
-	date, err := x.DateTime()
+	ti := exif.NewTagIndex()
+
+	_, index, err := exif.Collect(c.ifdMapping, ti, rawExif)
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	if !date.IsZero() {
-		return date, nil
+	exifTree, ok := index.Lookup["IFD/Exif"]
+	if !ok {
+		return time.Time{}, errors.New("IFD/Exif mapping not found")
 	}
 
-	return fileInfo.ModTime(), nil
+	results, err := exifTree.FindTagWithName("DateTimeOriginal")
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if len(results) != 1 {
+		return time.Time{}, errors.New("DateTimeOriginal invalid")
+	}
+
+	v, err := results[0].Value()
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	date, err := time.Parse("2006:01:02 15:04:05", v.(string))
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return date, nil
 }
