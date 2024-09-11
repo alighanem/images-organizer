@@ -14,7 +14,7 @@
                 "PICTURES_FOLDER": "D:\\Ali\\OneDrive\\Images\\Pellicule",
                 //"PICTURES_FOLDER": "D:\\Ali\\OneDrive\\Images\\2010",
                 "DESTINATION_FOLDER": "D:\\Ali\\OneDrive\\Images" ,
-                "DRY_RUN": "true"
+                "DRY_RUN": "false"
             }
         }
     ]

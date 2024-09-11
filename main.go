@@ -29,6 +29,7 @@ var allowedExtensions = map[string]struct{}{
 	".png": {},
 	".mp4": {},
 	".avi": {},
+	".mov": {},
 }
 
 func configure() *CLI {
