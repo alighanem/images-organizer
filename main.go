@@ -164,7 +164,7 @@ func main() {
 			// Create the destination folder if it does not existy
 			err = os.Mkdir(destinationFolder, 0755)
 			if err != nil {
-				log.Error("creating image folder", "folder_path", destinationFolder)
+				log.Error("creating image folder", "folder_path", destinationFolder, "err", err)
 				return
 			}
 		}
